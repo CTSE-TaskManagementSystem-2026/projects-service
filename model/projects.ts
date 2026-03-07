@@ -1,4 +1,4 @@
-// models/project.ts
+// model/projects.ts
 import mongoose, { Document, Model, Schema } from "mongoose";
 
 export interface IProject extends Document {
@@ -7,26 +7,10 @@ export interface IProject extends Document {
     active: boolean;
     status: "active" | "inactive" | "archived" | "completed";
     dueDate?: Date;
-    tasks: ITask[];
-    tasksCount: number;
+    tasksCount: number; // denormalised counter kept in sync by tasks-service
     createdAt: Date;
     updatedAt: Date;
 }
-
-export interface ITask {
-    title: string;
-    completed: boolean;
-    createdAt: Date;
-}
-
-const TaskSchema = new Schema<ITask>(
-    {
-        title: { type: String, required: true, trim: true },
-        completed: { type: Boolean, default: false },
-        createdAt: { type: Date, default: Date.now },
-    },
-    { _id: true }
-);
 
 const ProjectSchema = new Schema<IProject>(
     {
@@ -39,8 +23,8 @@ const ProjectSchema = new Schema<IProject>(
             default: "active",
         },
         dueDate: { type: Date },
-        tasks: { type: [TaskSchema], default: [] },
-        tasksCount: { type: Number, default: 0 },
+        // tasks-service increments / decrements this counter via PATCH /api/projects?id=…
+        tasksCount: { type: Number, default: 0, min: 0 },
     },
     {
         timestamps: true,
@@ -48,11 +32,6 @@ const ProjectSchema = new Schema<IProject>(
         toObject: { virtuals: true },
     }
 );
-
-// Keep tasksCount in sync automatically
-ProjectSchema.pre("save", async function () {
-    this.tasksCount = this.tasks.length;
-});
 
 const Project: Model<IProject> =
     mongoose.models.Project ?? mongoose.model<IProject>("Project", ProjectSchema);
