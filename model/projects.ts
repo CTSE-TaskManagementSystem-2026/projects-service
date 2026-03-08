@@ -8,6 +8,7 @@ export interface IProject extends Document {
     status: "active" | "inactive" | "archived" | "completed";
     dueDate?: Date;
     tasksCount: number; // denormalised counter kept in sync by tasks-service
+    createdBy: string;  // userId from JWT — owner of the project
     createdAt: Date;
     updatedAt: Date;
 }
@@ -25,6 +26,8 @@ const ProjectSchema = new Schema<IProject>(
         dueDate: { type: Date },
         // tasks-service increments / decrements this counter via PATCH /api/projects?id=…
         tasksCount: { type: Number, default: 0, min: 0 },
+        // Owner — set from JWT on creation; used to scope queries for non-admin users
+        createdBy: { type: String, required: true, index: true },
     },
     {
         timestamps: true,

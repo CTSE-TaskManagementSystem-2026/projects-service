@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { connectToDatabase } from "@/lib/mongodb";
 import Project, { IProject } from "@/model/projects";
+import { requireAuth, requireInternalSecret } from "@/lib/auth";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -60,12 +61,32 @@ function errorResponse(err: unknown, fallback: string) {
     );
 }
 
-// ─── GET — list all projects with summary ─────────────────────────────────────
+// ─── GET — list projects (scoped by user, or all for admin) ───────────────────
 
-export async function GET(): Promise<NextResponse<ProjectsSuccessResponse | ProjectErrorResponse>> {
+export async function GET(
+    req: NextRequest
+): Promise<NextResponse<ProjectsSuccessResponse | ProjectErrorResponse>> {
+    let token;
+    try {
+        token = requireAuth(req);
+    } catch (res) {
+        return res as NextResponse<ProjectErrorResponse>;
+    }
+
     try {
         await connectToDatabase();
-        const projects = await Project.find().lean<IProject[]>();
+
+        // Admins can optionally pass ?userId= to filter by a specific user; otherwise see all.
+        // Regular users always see only their own projects.
+        const filter: Record<string, unknown> = {};
+        if (token.role === "admin") {
+            const userIdParam = req.nextUrl.searchParams.get("userId");
+            if (userIdParam) filter.createdBy = userIdParam;
+        } else {
+            filter.createdBy = token.userId;
+        }
+
+        const projects = await Project.find(filter).lean<IProject[]>();
         const summary = buildSummary(projects);
 
         return NextResponse.json({ projects, summary }, { status: 200 });
@@ -79,6 +100,13 @@ export async function GET(): Promise<NextResponse<ProjectsSuccessResponse | Proj
 export async function POST(
     req: NextRequest
 ): Promise<NextResponse<IProject | ProjectErrorResponse>> {
+    let token;
+    try {
+        token = requireAuth(req);
+    } catch (res) {
+        return res as NextResponse<ProjectErrorResponse>;
+    }
+
     try {
         await connectToDatabase();
 
@@ -97,7 +125,8 @@ export async function POST(
             active: body.active ?? true,
             status: body.status ?? "active",
             dueDate: body.dueDate ? new Date(body.dueDate) : undefined,
-            // tasksCount starts at 0; tasks-service will update it via PATCH
+            // Owner is always taken from the verified JWT — never trusts the request body
+            createdBy: token.userId,
         });
 
         return NextResponse.json(project.toJSON() as IProject, { status: 201 });
@@ -111,6 +140,13 @@ export async function POST(
 export async function PUT(
     req: NextRequest
 ): Promise<NextResponse<IProject | ProjectErrorResponse>> {
+    let token;
+    try {
+        token = requireAuth(req);
+    } catch (res) {
+        return res as NextResponse<ProjectErrorResponse>;
+    }
+
     try {
         await connectToDatabase();
 
@@ -119,6 +155,21 @@ export async function PUT(
             return NextResponse.json<ProjectErrorResponse>(
                 { error: "Validation error", details: "`id` query param is required" },
                 { status: 400 }
+            );
+        }
+
+        // Non-admins can only update their own projects
+        const existing = await Project.findById(id).lean<IProject>();
+        if (!existing) {
+            return NextResponse.json<ProjectErrorResponse>(
+                { error: "Not found", details: `No project with id ${id}` },
+                { status: 404 }
+            );
+        }
+        if (token.role !== "admin" && existing.createdBy !== token.userId) {
+            return NextResponse.json<ProjectErrorResponse>(
+                { error: "Forbidden", details: "You do not own this project" },
+                { status: 403 }
             );
         }
 
@@ -157,6 +208,13 @@ export async function PUT(
 export async function DELETE(
     req: NextRequest
 ): Promise<NextResponse<{ message: string } | ProjectErrorResponse>> {
+    let token;
+    try {
+        token = requireAuth(req);
+    } catch (res) {
+        return res as NextResponse<ProjectErrorResponse>;
+    }
+
     try {
         await connectToDatabase();
 
@@ -168,14 +226,22 @@ export async function DELETE(
             );
         }
 
-        const deleted = await Project.findByIdAndDelete(id).lean<IProject>();
-
-        if (!deleted) {
+        // Non-admins can only delete their own projects
+        const existing = await Project.findById(id).lean<IProject>();
+        if (!existing) {
             return NextResponse.json<ProjectErrorResponse>(
                 { error: "Not found", details: `No project with id ${id}` },
                 { status: 404 }
             );
         }
+        if (token.role !== "admin" && existing.createdBy !== token.userId) {
+            return NextResponse.json<ProjectErrorResponse>(
+                { error: "Forbidden", details: "You do not own this project" },
+                { status: 403 }
+            );
+        }
+
+        await Project.findByIdAndDelete(id).lean<IProject>();
 
         return NextResponse.json({ message: `Project ${id} deleted successfully` }, { status: 200 });
     } catch (err) {
@@ -184,6 +250,7 @@ export async function DELETE(
 }
 
 // ─── PATCH — update tasksCount (called by tasks-service only) ─────────────────
+// Protected by x-internal-secret header — NOT a user JWT.
 // tasks-service calls this after creating or deleting a task so that
 // projects-service always has an accurate denormalised counter.
 //
@@ -193,6 +260,12 @@ export async function DELETE(
 export async function PATCH(
     req: NextRequest
 ): Promise<NextResponse<IProject | ProjectErrorResponse>> {
+    try {
+        requireInternalSecret(req);
+    } catch (res) {
+        return res as NextResponse<ProjectErrorResponse>;
+    }
+
     try {
         await connectToDatabase();
 
