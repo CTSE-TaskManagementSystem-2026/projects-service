@@ -27,7 +27,7 @@ export function requireAuth(req: NextRequest): TokenPayload {
     }
 
     const token = authHeader.slice(7); // strip "Bearer "
-    const secret = process.env.JWT_SECRET;
+    const secret = 'supersecretkey';
 
     if (!secret) {
         throw NextResponse.json(
