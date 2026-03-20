@@ -1,4 +1,4 @@
-name: Deploy Frontend to ECS
+name: Scan and Deploy Projects Service
 
 on:
   push:
@@ -18,7 +18,23 @@ env:
   CONTAINER_NAME: projects-container
 
 jobs:
+  sonarqube:
+    name: SonarQube Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v7
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
   deploy:
+    name: Deploy to ECS
+    needs: sonarqube
     runs-on: ubuntu-latest
 
     steps:
