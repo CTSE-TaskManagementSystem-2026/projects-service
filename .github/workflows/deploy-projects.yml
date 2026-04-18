@@ -13,7 +13,7 @@ env:
   AWS_REGION: eu-north-1
   ECR_REPOSITORY: taskapp/projects-service
   ECS_CLUSTER: task-master-cluster2
-  ECS_SERVICE: projects-definition-service1
+  ECS_SERVICE: projects-definition-service-1
   ECS_TASK_DEFINITION_FAMILY: projects-definition
   CONTAINER_NAME: projects-container
 
