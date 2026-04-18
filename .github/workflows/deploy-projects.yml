@@ -1,4 +1,4 @@
-name: Scan and Deploy Tasks Service
+name: Scan and Deploy Projects Service
 
 on:
   push:
@@ -11,11 +11,11 @@ permissions:
 
 env:
   AWS_REGION: eu-north-1
-  ECR_REPOSITORY: taskapp/tasks-service
-  ECS_CLUSTER: task-master-cluster
-  ECS_SERVICE: task-definition-service-1
-  ECS_TASK_DEFINITION_FAMILY: task-definition
-  CONTAINER_NAME: task-container
+  ECR_REPOSITORY: taskapp/projects-service
+  ECS_CLUSTER: task-master-cluster2
+  ECS_SERVICE: projects-definition-service1
+  ECS_TASK_DEFINITION_FAMILY: projects-definition
+  CONTAINER_NAME: projects-container
 
 jobs:
   sonarqube:

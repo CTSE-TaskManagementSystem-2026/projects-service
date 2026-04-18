@@ -1,0 +1,597 @@
+openapi: 3.0.3
+info:
+  title: Projects Service API
+  version: 1.0.0
+  description: >
+    API contract for the projects microservice.
+    User-facing endpoints are protected by a Bearer JWT issued by the auth-service.
+    The PATCH endpoint is an internal service-to-service call protected by the
+    x-internal-secret header and is intended for use by tasks-service only.
+
+servers:
+  - url: http://taskapp-alb-1388462037.eu-north-1.elb.amazonaws.com
+    description: AWS ALB (production)
+
+# ─── Security Schemes ────────────────────────────────────────────────────────
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token issued by auth-service. Include as `Authorization: Bearer <token>`.
+
+    InternalSecret:
+      type: apiKey
+      in: header
+      name: x-internal-secret
+      description: Shared secret used for internal service-to-service calls (tasks-service → projects-service).
+
+  # ─── Reusable Schemas ──────────────────────────────────────────────────────
+  schemas:
+
+    # ── Project (full object returned by the API) ──────────────────────────
+    Project:
+      type: object
+      properties:
+        _id:
+          type: string
+          description: MongoDB ObjectId
+          example: "664a1f2e9b4e3c1a2b3d4e5f"
+        id:
+          type: string
+          description: Alias for _id (virtual)
+          example: "664a1f2e9b4e3c1a2b3d4e5f"
+        name:
+          type: string
+          example: "Website Redesign"
+        description:
+          type: string
+          example: "Full redesign of the company marketing website."
+        active:
+          type: boolean
+          example: true
+        status:
+          type: string
+          enum: [active, inactive, archived, completed]
+          example: active
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2025-06-30T00:00:00.000Z"
+        tasksCount:
+          type: integer
+          description: Denormalised task counter maintained by tasks-service.
+          example: 5
+        createdBy:
+          type: string
+          description: userId extracted from the JWT of the user who created the project.
+          example: "user_abc123"
+        createdAt:
+          type: string
+          format: date-time
+          example: "2025-01-10T09:00:00.000Z"
+        updatedAt:
+          type: string
+          format: date-time
+          example: "2025-03-15T12:30:00.000Z"
+
+    # ── Summary block returned alongside the project list ─────────────────
+    ProjectsSummary:
+      type: object
+      properties:
+        totalProjects:
+          type: integer
+          example: 10
+        activeProjects:
+          type: integer
+          example: 7
+        overdue:
+          type: integer
+          example: 2
+        totalTasks:
+          type: integer
+          example: 43
+
+    # ── Request bodies ─────────────────────────────────────────────────────
+    CreateProjectRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          example: "Website Redesign"
+        description:
+          type: string
+          example: "Full redesign of the company marketing website."
+        active:
+          type: boolean
+          default: true
+          example: true
+        status:
+          type: string
+          enum: [active, inactive, archived, completed]
+          default: active
+          example: active
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2025-06-30T00:00:00.000Z"
+
+    UpdateProjectRequest:
+      type: object
+      description: >
+        All fields are optional. Only the provided fields will be updated.
+        `name` must not be blank if provided.
+      properties:
+        name:
+          type: string
+          example: "Website Redesign v2"
+        description:
+          type: string
+          example: "Updated description."
+        active:
+          type: boolean
+          example: false
+        status:
+          type: string
+          enum: [active, inactive, archived, completed]
+          example: completed
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2025-09-01T00:00:00.000Z"
+
+    PatchTasksCountRequest:
+      type: object
+      description: >
+        Provide exactly one of `delta` (relative change) or `tasksCount`
+        (absolute value). Called by tasks-service only.
+      properties:
+        delta:
+          type: integer
+          description: Increment (+) or decrement (−) the tasksCount by this amount.
+          example: 1
+        tasksCount:
+          type: integer
+          description: Set tasksCount to this absolute value (clamped to ≥ 0).
+          example: 10
+
+    # ── Responses ──────────────────────────────────────────────────────────
+    ProjectsListResponse:
+      type: object
+      properties:
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/Project'
+        summary:
+          $ref: '#/components/schemas/ProjectsSummary'
+
+    DeleteSuccessResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: "Project 664a1f2e9b4e3c1a2b3d4e5f deleted successfully"
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "Validation error"
+        details:
+          type: string
+          example: "`name` is required"
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "ok"
+
+# ─── Paths ───────────────────────────────────────────────────────────────────
+paths:
+
+  # ── Health check ──────────────────────────────────────────────────────────
+  /api/health:
+    get:
+      summary: Health check
+      description: Returns `{ status: "ok" }` when the service is running. No authentication required.
+      operationId: healthCheck
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+
+  # ── Projects collection ───────────────────────────────────────────────────
+  /api/projects:
+    get:
+      summary: List projects
+      description: >
+        Returns all projects owned by the authenticated user plus a summary.
+        Admins may optionally filter by `userId`; regular users always see only
+        their own projects.
+      operationId: listProjects
+      tags:
+        - Projects
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: userId
+          in: query
+          required: false
+          description: >
+            *Admin only.* Filter results to projects created by this userId.
+            Ignored for non-admin users.
+          schema:
+            type: string
+          example: "user_abc123"
+      responses:
+        '200':
+          description: Projects retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectsListResponse'
+              example:
+                projects:
+                  - _id: "664a1f2e9b4e3c1a2b3d4e5f"
+                    id: "664a1f2e9b4e3c1a2b3d4e5f"
+                    name: "Website Redesign"
+                    description: "Full redesign of the company marketing website."
+                    active: true
+                    status: active
+                    dueDate: "2025-06-30T00:00:00.000Z"
+                    tasksCount: 5
+                    createdBy: "user_abc123"
+                    createdAt: "2025-01-10T09:00:00.000Z"
+                    updatedAt: "2025-03-15T12:30:00.000Z"
+                summary:
+                  totalProjects: 1
+                  activeProjects: 1
+                  overdue: 0
+                  totalTasks: 5
+        '401':
+          description: Missing or invalid Authorization header / token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Unauthorized
+                details: Missing or malformed Authorization header
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    post:
+      summary: Create a project
+      description: Creates a new project owned by the authenticated user.
+      operationId: createProject
+      tags:
+        - Projects
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+            example:
+              name: "Website Redesign"
+              description: "Full redesign of the company marketing website."
+              active: true
+              status: active
+              dueDate: "2025-06-30T00:00:00.000Z"
+      responses:
+        '201':
+          description: Project created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+              example:
+                _id: "664a1f2e9b4e3c1a2b3d4e5f"
+                id: "664a1f2e9b4e3c1a2b3d4e5f"
+                name: "Website Redesign"
+                description: "Full redesign of the company marketing website."
+                active: true
+                status: active
+                dueDate: "2025-06-30T00:00:00.000Z"
+                tasksCount: 0
+                createdBy: "user_abc123"
+                createdAt: "2025-01-10T09:00:00.000Z"
+                updatedAt: "2025-01-10T09:00:00.000Z"
+        '400':
+          description: Validation error — `name` is missing or blank
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Validation error
+                details: "`name` is required"
+        '401':
+          description: Missing or invalid Authorization header / token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    put:
+      summary: Update a project
+      description: >
+        Partially updates an existing project identified by the `id` query parameter.
+        Non-admin users may only update projects they own.
+      operationId: updateProject
+      tags:
+        - Projects
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          description: MongoDB ObjectId of the project to update.
+          schema:
+            type: string
+          example: "664a1f2e9b4e3c1a2b3d4e5f"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequest'
+            example:
+              name: "Website Redesign v2"
+              status: completed
+              active: false
+      responses:
+        '200':
+          description: Project updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+              example:
+                _id: "664a1f2e9b4e3c1a2b3d4e5f"
+                id: "664a1f2e9b4e3c1a2b3d4e5f"
+                name: "Website Redesign v2"
+                description: "Full redesign of the company marketing website."
+                active: false
+                status: completed
+                dueDate: "2025-06-30T00:00:00.000Z"
+                tasksCount: 5
+                createdBy: "user_abc123"
+                createdAt: "2025-01-10T09:00:00.000Z"
+                updatedAt: "2025-04-01T08:00:00.000Z"
+        '400':
+          description: Validation error — `id` query param missing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Validation error
+                details: "`id` query param is required"
+        '401':
+          description: Missing or invalid Authorization header / token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden — user does not own this project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Forbidden
+                details: You do not own this project
+        '404':
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Not found
+                details: "No project with id 664a1f2e9b4e3c1a2b3d4e5f"
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      summary: Delete a project
+      description: >
+        Permanently deletes the project identified by the `id` query parameter.
+        Non-admin users may only delete projects they own.
+      operationId: deleteProject
+      tags:
+        - Projects
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          description: MongoDB ObjectId of the project to delete.
+          schema:
+            type: string
+          example: "664a1f2e9b4e3c1a2b3d4e5f"
+      responses:
+        '200':
+          description: Project deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteSuccessResponse'
+              example:
+                message: "Project 664a1f2e9b4e3c1a2b3d4e5f deleted successfully"
+        '400':
+          description: Validation error — `id` query param missing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Validation error
+                details: "`id` query param is required"
+        '401':
+          description: Missing or invalid Authorization header / token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden — user does not own this project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Forbidden
+                details: You do not own this project
+        '404':
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Not found
+                details: "No project with id 664a1f2e9b4e3c1a2b3d4e5f"
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    patch:
+      summary: Update tasksCount (internal — tasks-service only)
+      description: >
+        Increments or decrements the denormalised `tasksCount` field on a project.
+        This endpoint is called exclusively by tasks-service whenever a task is
+        created or deleted. It is **not** intended for end-user clients.
+        Protected by the `x-internal-secret` header; does **not** accept a user JWT.
+      operationId: patchTasksCount
+      tags:
+        - Projects (Internal)
+      security:
+        - InternalSecret: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          description: MongoDB ObjectId of the project to update.
+          schema:
+            type: string
+          example: "664a1f2e9b4e3c1a2b3d4e5f"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchTasksCountRequest'
+            examples:
+              relative_increment:
+                summary: Increment tasksCount by 1 (task created)
+                value:
+                  delta: 1
+              relative_decrement:
+                summary: Decrement tasksCount by 1 (task deleted)
+                value:
+                  delta: -1
+              absolute_set:
+                summary: Set tasksCount to an absolute value (recount after bulk op)
+                value:
+                  tasksCount: 10
+      responses:
+        '200':
+          description: tasksCount updated successfully — returns the full updated project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+              example:
+                _id: "664a1f2e9b4e3c1a2b3d4e5f"
+                id: "664a1f2e9b4e3c1a2b3d4e5f"
+                name: "Website Redesign"
+                description: "Full redesign of the company marketing website."
+                active: true
+                status: active
+                dueDate: "2025-06-30T00:00:00.000Z"
+                tasksCount: 6
+                createdBy: "user_abc123"
+                createdAt: "2025-01-10T09:00:00.000Z"
+                updatedAt: "2025-04-02T10:00:00.000Z"
+        '400':
+          description: Validation error — `id` missing or neither `delta` nor `tasksCount` provided
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing_id:
+                  summary: Missing id param
+                  value:
+                    error: Validation error
+                    details: "`id` query param is required"
+                missing_body:
+                  summary: Body has neither delta nor tasksCount
+                  value:
+                    error: Validation error
+                    details: "Provide `delta` or `tasksCount` in body"
+        '403':
+          description: Forbidden — missing or incorrect x-internal-secret
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Forbidden
+                details: Invalid or missing x-internal-secret header
+        '404':
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Not found
+                details: "No project with id 664a1f2e9b4e3c1a2b3d4e5f"
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
